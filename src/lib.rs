@@ -2,17 +2,17 @@ pub mod padding;
 
 use padding::PaddingError;
 
-pub trait KeyGenerator {
-    fn next_key(&mut self) -> Vec<u8>;
-}
-
-fn execute_rounds<K: KeyGenerator, F: Fn(&[u8], &[u8]) -> Vec<u8>>(
+fn execute_rounds<K, F>(
     result: &mut [u8],
     block_size: usize,
-    key_generator: &mut K,
+    mut key_generator: K,
     function: F,
     rounds: usize,
-) {
+)
+where
+    K: FnMut() -> Vec<u8>,
+    F: Fn(&[u8], &[u8]) -> Vec<u8>,
+{
     let (mut start, mut middle, mut end): (usize, usize, usize);
     let (mut left, mut right);
     let mut key;
@@ -30,7 +30,7 @@ fn execute_rounds<K: KeyGenerator, F: Fn(&[u8], &[u8]) -> Vec<u8>>(
             result[start..middle].copy_from_slice(&right[..]);
             
             // Produces the next right side
-            key = key_generator.next_key();
+            key = key_generator();
             right = function(&right[..], &key[..]);
             for i in 0..half_block_size {
                 left[i] ^= right[i];
@@ -51,13 +51,13 @@ pub fn cipher<P, K, F>(
     message: &[u8],
     block_size: usize,
     padder: P,
-    key_generator: &mut K,
+    key_generator: K,
     function: F,
     rounds: usize,
 ) -> Vec<u8>
 where
     P: Fn(&[u8], usize) -> Vec<u8>,
-    K: KeyGenerator,
+    K: FnMut() -> Vec<u8>,
     F: Fn(&[u8], &[u8]) -> Vec<u8>,
 {
     assert!(block_size > 0 && block_size%2 == 0);
@@ -71,13 +71,13 @@ where
 pub fn decipher<K, F, R>(
     message: &[u8],
     block_size: usize,
-    key_generator: &mut K,
+    key_generator: K,
     function: F,
     rounds: usize,
     padding_remover: R,
 ) -> Result<Vec<u8>, PaddingError>
 where
-    K: KeyGenerator,
+    K: FnMut() -> Vec<u8>,
     F: Fn(&[u8], &[u8]) -> Vec<u8>,
     R: Fn(&mut Vec<u8>) -> Result<(), PaddingError>,
 {
@@ -97,14 +97,6 @@ mod tests {
         super::*,
         padding::pkcs7,
     };
-
-    struct SimpleKey(String);
-
-    impl KeyGenerator for SimpleKey {
-        fn next_key(&mut self) -> Vec<u8> {
-            self.0.as_bytes().to_vec()
-        }
-    }
 
     fn slices_or(s1: &[u8], s2: &[u8]) -> Vec<u8> {
         let (shortest, longest) = if s1.len() < s2.len() { (s1, s2) } else { (s2, s1) };
@@ -126,23 +118,49 @@ mod tests {
     #[test]
     fn test() {
         let message = b"Hello, World!";
-        let mut key_generator = SimpleKey(String::from("Password"));
-        let ciphered = cipher(
-            &message[..],
-            16,
-            pkcs7::add_padding,
-            &mut key_generator,
-            slices_or,
-            50,
-        );
-        let deciphered = decipher(
-            &ciphered[..],
-            16,
-            &mut key_generator,
-            slices_or,
-            50,
-            pkcs7::remove_padding
-        ).unwrap();
+        let key = b"Password";
+        let mut key_count: u8 = 0;
+
+        let ciphered = {
+            let keys_to_cipher = || {
+                let mut result = Vec::with_capacity(key.len());
+                for i in 0..key.len() {
+                    result.push(key[i] ^ key_count);
+                }
+                key_count += 1;
+                
+                result
+            };
+            cipher(
+                &message[..],
+                16,
+                pkcs7::add_padding,
+                keys_to_cipher,
+                slices_or,
+                50,
+            )
+        };
+
+        let deciphered = {
+            let keys_to_decipher = || {
+                let mut result = Vec::with_capacity(key.len());
+                key_count -= 1;
+                for i in 0..key.len() {
+                    result.push(key[i] ^ key_count);
+                }
+
+                result
+            };
+            decipher(
+                &ciphered[..],
+                16,
+                keys_to_decipher,
+                slices_or,
+                50,
+                pkcs7::remove_padding
+            ).unwrap()
+        };
+
         assert_eq!(&message[..], &deciphered[..]);
     }
 }

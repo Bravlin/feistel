@@ -26,8 +26,9 @@ pub mod pkcs7 {
 
     pub fn remove_padding(message: &mut Vec<u8>) -> Result<(), PaddingError>{
         let padding = match message.last() {
-            None => return Err(PaddingError(String::from("No valid padding found."))),
-            Some(padding) => *padding,
+            None => return Err(PaddingError(String::from("Empty message."))),
+            Some(padding) if *padding > 0 => *padding,
+            _ => return Err(PaddingError(String::from("Padding number cannot be 0."))),
         };
         for _ in 1..=padding {
             match message.pop() {
