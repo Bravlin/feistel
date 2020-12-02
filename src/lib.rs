@@ -1,3 +1,5 @@
+//! Provides functions to start applying specialized Feistel ciphers right away.
+
 pub mod padding;
 
 use padding::PaddingError;
@@ -6,7 +8,7 @@ fn execute_rounds<K, F>(
     result: &mut [u8],
     block_size: usize,
     mut key_generator: K,
-    function: F,
+    round_function: F,
     rounds: usize,
 )
 where
@@ -31,7 +33,7 @@ where
             
             // Produces the next right side
             key = key_generator();
-            right = function(&right[..], &key[..]);
+            right = round_function(&right[..], &key[..]);
             for i in 0..half_block_size {
                 left[i] ^= right[i];
             }
@@ -47,12 +49,32 @@ where
     }
 }
 
+/// Returns an encrypted message.
+///
+/// # Arguments
+///
+/// * `message` - A byte string slice to the original message.
+///
+/// * `block_size` - The data block size in bytes. It must be a multiple of 2.
+///
+/// * `padder` - A closure that adds the necessary padding to the original message.
+///
+/// * `key_generator` - A FnMut closure that provides the key for each round.
+///
+/// * `round_function` - A closure that receives a slice of a data block and a slice of a key to
+/// produce an owned output of the same size as the data block.
+/// 
+/// * `rounds` - The number of times that the Fiestel cipher should be applied.
+///
+/// # Panics
+///
+/// The specified block size was 0 or it was not a multiple of 2.
 pub fn cipher<P, K, F>(
     message: &[u8],
     block_size: usize,
     padder: P,
     key_generator: K,
-    function: F,
+    round_function: F,
     rounds: usize,
 ) -> Vec<u8>
 where
@@ -60,19 +82,48 @@ where
     K: FnMut() -> Vec<u8>,
     F: Fn(&[u8], &[u8]) -> Vec<u8>,
 {
-    assert!(block_size > 0 && block_size%2 == 0);
+    assert!(block_size > 0, "Block size was 0!");
+    assert!(block_size%2 == 0, "Block size was not a multiple of 2!");
+
 
     let mut result = padder(message, block_size);
-    execute_rounds(&mut result[..], block_size, key_generator, function, rounds);
+    execute_rounds(&mut result[..], block_size, key_generator, round_function, rounds);
 
     result
 }
 
+/// Returns a desencrypted message.
+///
+/// # Arguments
+///
+/// * `message` - A byte string slice to the encrypted message.
+///
+/// * `block_size` - The data block size in bytes. It must be a multiple of 2.
+///
+/// * `key_generator` - A FnMut closure that provides the key for each round.
+///
+/// * `round_function` - A closure that receives a slice of a data block and a slice of a key to
+/// produce an owned output of the same size as the data block.
+/// 
+/// * `rounds` - The number of times that the Fiestel cipher should be applied.
+///
+/// * `padding_remover` - A closure thar receives a desencrypted message stored in a Vec and
+/// removes its padding (which was neccesary during the encryption of the message). It produces a
+/// PaddingError in case that the message is malformed for the particular padding strategy.
+///
+/// # Panics
+///
+/// The specified block size was 0 or it was not a multiple of 2.
+///
+/// # Failures
+///
+/// If the desencrypted messsage was not correctly padded according to the closure
+/// `padding_remover`, a `PaddingError` is produced.
 pub fn decipher<K, F, R>(
     message: &[u8],
     block_size: usize,
     key_generator: K,
-    function: F,
+    round_function: F,
     rounds: usize,
     padding_remover: R,
 ) -> Result<Vec<u8>, PaddingError>
@@ -81,11 +132,12 @@ where
     F: Fn(&[u8], &[u8]) -> Vec<u8>,
     R: Fn(&mut Vec<u8>) -> Result<(), PaddingError>,
 {
-    assert!(block_size > 0 && block_size%2 == 0);
+    assert!(block_size > 0, "Block size was 0!");
+    assert!(block_size%2 == 0, "Block size was not a multiple of 2!");
 
     let mut result = Vec::with_capacity(message.len());
     result.extend_from_slice(message);
-    execute_rounds(&mut result[..], block_size, key_generator, function, rounds);
+    execute_rounds(&mut result[..], block_size, key_generator, round_function, rounds);
     padding_remover(&mut result)?;
 
     Ok(result)
